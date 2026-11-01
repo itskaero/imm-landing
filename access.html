@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · IMM Pediatrics</title>
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#181e2c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23181e2c'/%3E%3Ctext x='32' y='43' font-size='30' font-family='Impact,Arial' fill='white' text-anchor='middle'%3EIMM%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+<div class="sky" aria-hidden="true"></div>
+<div class="grain" aria-hidden="true"></div>
+<header class="nav glass"><a class="brand" href="index.html">IMM<sup>®</sup></a><ul><li><a href="index.html#story">The story</a></li><li><a href="index.html#access">Request access</a></li></ul><a class="pill-btn ghost" href="index.html">Back to the page</a></header>
+
+<main class="page">
+  <section class="panel glass" aria-live="polite">
+    <span class="demo-note" hidden>Demo mode: use any email. The code is 123456.</span>
+    <h1 id="title">Sign in</h1>
+
+    <!-- step 1: email -->
+    <form id="step-email" novalidate>
+      <label class="field">Email<input type="email" name="email" placeholder="you@hospital.org" autocomplete="email" required></label>
+      <button class="pill-btn" type="submit" style="margin-top:14px">Send me a code <span class="dot" aria-hidden="true">→</span></button>
+      <p class="fineprint" style="margin-top:12px">No password. We email a short code to the address your invitation was sent to.</p>
+    </form>
+
+    <!-- step 2: code -->
+    <form id="step-code" class="hidden" novalidate>
+      <p style="margin:0 0 12px;color:var(--ink-soft)">We sent a 6-digit code to <b id="sent-to"></b>.</p>
+      <label class="field">Code<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456" required></label>
+      <button class="pill-btn" type="submit" style="margin-top:14px">Sign in <span class="dot" aria-hidden="true">→</span></button>
+      <button class="pill-btn ghost" type="button" id="back" style="margin-top:10px">Use a different email</button>
+    </form>
+
+    <!-- step 3: account -->
+    <div id="step-account" class="hidden">
+      <div class="state" id="who"></div>
+      <div id="has-access" class="hidden" style="display:grid;gap:12px;margin-top:14px">
+        <div class="state"><b>You have access.</b>Your install link is sent to your email, never shown on a public page.</div>
+        <button class="pill-btn" id="install" type="button">Email me my install link <span class="dot" aria-hidden="true">→</span></button>
+      </div>
+      <div id="no-access" class="hidden" style="display:grid;gap:12px;margin-top:14px">
+        <div class="state"><b data-bind="plan.name">Founding access</b><span data-bind="plan.priceLabel">Pricing announced soon</span></div>
+        <button class="pill-btn" id="checkout" type="button">Continue to payment <span class="dot" aria-hidden="true">→</span></button>
+        <button class="pill-btn ghost hidden" id="grant" type="button">Demo only: pretend the payment arrived</button>
+      </div>
+      <button class="pill-btn ghost" id="signout" type="button" style="margin-top:14px">Sign out</button>
+    </div>
+
+    <p class="msg" role="status"></p>
+  </section>
+</main>
+
+<script src="config.js"></script>
+<script src="assets/site.js"></script>
+<script>
+(() => {
+  const { api, cfg, live } = window.IMM;
+  const $ = (s) => document.querySelector(s);
+  const show = (id) => { ["#step-email", "#step-code", "#step-account"].forEach((s) => $(s).classList.toggle("hidden", s !== id)); $("#title").textContent = id === "#step-account" ? "Your account" : "Sign in"; };
+  const say = (text, kind = "") => { const m = $(".msg"); m.className = "msg " + kind; m.textContent = text; };
+  const busy = (btn, on) => { if (btn) btn.disabled = on; };
+  let email = "";
+
+  async function account() {
+    const me = await api("/v1/me");
+    $("#who").innerHTML = `<b>${me.email.replace(/[<>&]/g, "")}</b>${me.entitlement && me.entitlement.active ? "Active member" : "No active plan yet"}`;
+    const active = !!(me.entitlement && me.entitlement.active);
+    $("#has-access").classList.toggle("hidden", !active);
+    $("#no-access").classList.toggle("hidden", active);
+    $("#grant").classList.toggle("hidden", live);
+    show("#step-account");
+    if (new URLSearchParams(location.search).get("demo-paid") && !live) say("Demo: payment page would open here.", "ok");
+  }
+
+  $("#step-email").addEventListener("submit", async (e) => {
+    e.preventDefault(); email = e.target.email.value.trim(); busy(e.submitter, true); say("Sending...");
+    try { const r = await api("/v1/auth/request-link", { method: "POST", body: { email } }); $("#sent-to").textContent = email; show("#step-code"); say(r.demoCode ? `Demo code: ${r.demoCode}` : "", "ok"); }
+    catch (err) { say(err.message, "err"); }
+    busy(e.submitter, false);
+  });
+  $("#step-code").addEventListener("submit", async (e) => {
+    e.preventDefault(); busy(e.submitter, true); say("Checking...");
+    try { await api("/v1/auth/verify", { method: "POST", body: { email, code: e.target.code.value } }); say(""); await account(); }
+    catch (err) { say(err.message, "err"); }
+    busy(e.submitter, false);
+  });
+  $("#back").addEventListener("click", () => { say(""); show("#step-email"); });
+  $("#checkout").addEventListener("click", async (e) => {
+    busy(e.currentTarget, true); say("Opening payment...");
+    try { const r = await api("/v1/checkout", { method: "POST", body: { plan: cfg.plan.id, successUrl: location.origin + location.pathname + "?paid=1", cancelUrl: location.href } }); if (live) location.href = r.url; else say("Demo: this is where the payment provider's page would open.", "ok"); }
+    catch (err) { say(err.message, "err"); }
+    busy(e.currentTarget, false);
+  });
+  $("#grant").addEventListener("click", async () => { try { await api("/v1/demo/grant", { method: "POST", body: {} }); await account(); say("Demo payment recorded.", "ok"); } catch (err) { say(err.message, "err"); } });
+  $("#install").addEventListener("click", async (e) => {
+    busy(e.currentTarget, true); say("Sending...");
+    try { await api("/v1/access/install-link", { method: "POST", body: {} }); say("Check your email for your install link.", "ok"); }
+    catch (err) { say(err.message, "err"); }
+    busy(e.currentTarget, false);
+  });
+  $("#signout").addEventListener("click", async () => { try { await api("/v1/auth/logout", { method: "POST", body: {} }); } catch { /* already signed out */ } say(""); show("#step-email"); });
+
+  api("/v1/me").then(account).catch(() => show("#step-email"));   // already signed in? go straight to the account
+})();
+</script>
+</body>
+</html>

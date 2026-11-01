@@ -1,0 +1,180 @@
+openapi: 3.0.3
+info:
+  title: IMM Pediatrics site API
+  version: 0.1.0
+  description: |
+    The contract between the landing/access pages (site/) and a backend. Implement these routes on any stack;
+    `site/server/mock-server.mjs` is a working stand-in that follows this file.
+
+    Principles
+    - Sessions are an HttpOnly, SameSite=Lax cookie set by the server. The browser never sees a token.
+    - The site never receives a download URL. Members get their install link by email, one-time and expiring.
+    - Access is decided on the server from payments: the browser cannot grant itself an entitlement.
+    - Errors are always `{ "error": { "code": "...", "message": "..." } }` with a matching HTTP status.
+servers:
+  - url: https://api.example.com
+    description: Replace with your API origin (or "" for same origin)
+tags:
+  - name: waitlist
+  - name: auth
+  - name: account
+  - name: payments
+paths:
+  /v1/waitlist:
+    post:
+      tags: [waitlist]
+      summary: Join the early-access list
+      description: Idempotent per email. Rate-limit by IP. Verify the bot-check token if `botCheck` is enabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WaitlistRequest" }
+      responses:
+        "201": { description: Added, content: { application/json: { schema: { $ref: "#/components/schemas/WaitlistResult" } } } }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/auth/request-link:
+    post:
+      tags: [auth]
+      summary: Email a 6-digit sign-in code
+      description: |
+        Always answer 200 whether or not the address is known (no account enumeration). Codes expire in 10 minutes,
+        allow 5 tries, and requests are limited to 5 per address per hour. Only the mock server returns `demoCode`.
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string, format: email } } } } }
+      responses:
+        "200": { description: Sent, content: { application/json: { schema: { $ref: "#/components/schemas/Ok" } } } }
+        "422": { $ref: "#/components/responses/Invalid" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /v1/auth/verify:
+    post:
+      tags: [auth]
+      summary: Exchange the code for a session
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [email, code], properties: { email: { type: string, format: email }, code: { type: string, pattern: "^[0-9]{6}$" } } } } }
+      responses:
+        "200":
+          description: Signed in. Sets the `imm_session` cookie.
+          headers: { Set-Cookie: { schema: { type: string }, description: "imm_session=...; HttpOnly; Secure; SameSite=Lax; Path=/" } }
+          content: { application/json: { schema: { $ref: "#/components/schemas/Ok" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: End the session
+      responses:
+        "200": { description: Signed out, content: { application/json: { schema: { $ref: "#/components/schemas/Ok" } } } }
+  /v1/me:
+    get:
+      tags: [account]
+      summary: Who am I, and do I have access
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { description: The account, content: { application/json: { schema: { $ref: "#/components/schemas/Me" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/access/install-link:
+    post:
+      tags: [account]
+      summary: Email the member a one-time install link
+      description: |
+        Requires an active entitlement. The server emails a signed, single-use, short-lived link and returns only
+        `{ ok: true, delivery: "email" }`. No file URL is ever returned to the browser.
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { description: Queued, content: { application/json: { schema: { type: object, properties: { ok: { type: boolean }, delivery: { type: string, enum: [email] } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: No active entitlement, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /v1/checkout:
+    post:
+      tags: [payments]
+      summary: Start a payment
+      description: |
+        Create a checkout session with your payment provider and return its hosted-page URL. The price comes from
+        the server's own plan table, never from the request.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CheckoutRequest" } } }
+      responses:
+        "200": { description: Where to send the browser, content: { application/json: { schema: { type: object, properties: { url: { type: string, format: uri } } } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /v1/webhooks/payment:
+    post:
+      tags: [payments]
+      summary: Payment provider to server (not called by the browser)
+      description: |
+        Verify the provider's signature on the raw body before trusting anything (the mock uses HMAC-SHA256 in the
+        `x-signature` header; use your provider's scheme in production). Make handling idempotent by event id.
+        `payment.succeeded` grants the entitlement; `payment.refunded` removes it.
+      parameters:
+        - { in: header, name: x-signature, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/PaymentEvent" } } }
+      responses:
+        "200": { description: Accepted, content: { application/json: { schema: { $ref: "#/components/schemas/Ok" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  securitySchemes:
+    cookieAuth: { type: apiKey, in: cookie, name: imm_session }
+  responses:
+    Invalid: { description: Invalid input, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    Unauthorized: { description: Signed out, bad code, or bad signature, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    RateLimited: { description: Too many requests, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  schemas:
+    Ok: { type: object, properties: { ok: { type: boolean } }, required: [ok] }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: invalid_email }
+            message: { type: string, description: Safe to show to the person }
+    WaitlistRequest:
+      type: object
+      required: [email, consent]
+      properties:
+        email: { type: string, format: email }
+        role: { type: string }
+        examDate: { type: string, format: date }
+        consent: { type: boolean, enum: [true], description: They ticked the box to be emailed }
+        source: { type: string, description: Page the form was on }
+        botToken: { type: string, description: Turnstile/reCAPTCHA token when enabled }
+    WaitlistResult:
+      type: object
+      properties: { ok: { type: boolean }, position: { type: integer } }
+    Me:
+      type: object
+      required: [email, entitlement]
+      properties:
+        email: { type: string, format: email }
+        entitlement: { $ref: "#/components/schemas/Entitlement" }
+    Entitlement:
+      type: object
+      required: [active]
+      properties:
+        active: { type: boolean }
+        plan: { type: string }
+        expiresAt: { type: string, format: date-time, nullable: true }
+    CheckoutRequest:
+      type: object
+      required: [plan]
+      properties:
+        plan: { type: string, example: founding }
+        successUrl: { type: string, format: uri }
+        cancelUrl: { type: string, format: uri }
+    PaymentEvent:
+      type: object
+      required: [type, email]
+      properties:
+        id: { type: string, description: Provider event id, for idempotency }
+        type: { type: string, enum: [payment.succeeded, payment.refunded] }
+        email: { type: string, format: email }
+        plan: { type: string }
+        expiresAt: { type: string, format: date-time, nullable: true }
